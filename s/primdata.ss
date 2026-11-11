@@ -1998,6 +1998,11 @@
   ($distinct-bound-ids? [sig [(list) -> (boolean)]] [flags discard])
   ($dofmt [flags single-valued])
   ($do-wind [flags single-valued])
+  ($winder-outer [flags single-valued])
+  ($winder-depth [flags single-valued])
+  ($winders-critical [flags single-valued])
+  ($wind-out! [flags single-valued])
+  ($wind-in! [flags single-valued])
   ($dynamic-closure-counts [flags single-valued alloc])  ; added for closure instrumentation
   ($emit-boot-header [flags single-valued])
   ($enum-set-members [flags single-valued])

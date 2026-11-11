@@ -279,47 +279,99 @@
 (let ()
   (include "types.ss")
   
-  (define disable/enable (make-winder disable-interrupts enable-interrupts '()))
+  (define-syntax winders-depth
+    (syntax-rules ()
+      [(_ w) (let ([x w]) (if (null? x) 0 (winder-depth x)))]))
+
+  ;; the innermost critical winder of a chain, or '()
+  (define-syntax winders-critical
+    (syntax-rules ()
+      [(_ w) (let ([x w])
+               (cond
+                 [(null? x) '()]
+                 [(or (critical-winder? x) (pseudo-winder? x)) x]
+                 [else (winder-critical x)]))]))
+
+  ;; leave the extent of `w`, which must be `($current-winders)`
+  (define (wind-out! w)
+    (let ([outer (winder-outer w)])
+      (cond
+        [(pseudo-winder? w)
+         ($current-winders outer)
+         (enable-interrupts)]
+        [(critical-winder? w)
+         (disable-interrupts)
+         ($current-winders (make-pseudo-winder outer (winder-depth w) (winder-critical w)))
+         ($current-attachments (thunk-winder-attachments w))
+         ((thunk-winder-out w))
+         ($current-winders outer)
+         (enable-interrupts)]
+        [else
+         ($current-winders outer)
+         ($current-attachments (thunk-winder-attachments w))
+         ((thunk-winder-out w))])))
+
+  ;; enter the extent of `w`, whose outer must be `($current-winders)`
+  (define (wind-in! w)
+    (cond
+      [(pseudo-winder? w)
+       (disable-interrupts)
+       ($current-winders w)]
+      [(critical-winder? w)
+       (disable-interrupts)
+       ($current-winders (make-pseudo-winder (winder-outer w) (winder-depth w) (winder-critical w)))
+       ($current-attachments (thunk-winder-attachments w))
+       ((thunk-winder-in w))
+       ($current-winders w)
+       (enable-interrupts)]
+      [else
+       ($current-attachments (thunk-winder-attachments w))
+       ((thunk-winder-in w))
+       ($current-winders w)]))
 
   (define (dwind in body out)
-    (let ((old-winders ($current-winders)))
-      (in)
-      ($current-winders (cons (make-winder in out ($current-attachments)) old-winders))
+    (in)
+    (let* ([old ($current-winders)]
+           [w (make-thunk-winder old (fx+ (winders-depth old) 1) (winders-critical old)
+                                 in out ($current-attachments))])
+      ($current-winders w)
       (call-with-values
         body
         (case-lambda
           [(x)
-           ($current-winders old-winders)
+           ($current-winders old)
            (out)
            x]
           [args
-           ($current-winders old-winders)
+           ($current-winders old)
            (out)
            (apply values args)]))))
 
   (define (cwind in body out)
-    (let* ((old-winders ($current-winders))
-           [d/e+old-winders (cons disable/enable old-winders)])
+    (let* ([old ($current-winders)]
+           [depth (fx+ (winders-depth old) 1)]
+           [critical (winders-critical old)]
+           [p (make-pseudo-winder old depth critical)])
       (disable-interrupts)
-      ($current-winders d/e+old-winders)
+      ($current-winders p)
       (in)
-      ($current-winders (cons (make-critical-winder in out ($current-attachments)) old-winders))
+      ($current-winders (make-critical-winder old depth critical in out ($current-attachments)))
       (enable-interrupts)
       (call-with-values
         body
         (case-lambda
           [(x)
            (disable-interrupts)
-           ($current-winders d/e+old-winders)
+           ($current-winders p)
            (out)
-           ($current-winders old-winders)
+           ($current-winders old)
            (enable-interrupts)
            x]
           [args
            (disable-interrupts)
-           ($current-winders d/e+old-winders)
+           ($current-winders p)
            (out)
-           ($current-winders old-winders)
+           ($current-winders old)
            (enable-interrupts)
            (apply values args)]))))
 
@@ -348,45 +400,30 @@
 
   (set! $do-wind
     (lambda (old new)
-      (define common-tail
-        (lambda (x y)
-          (let ([lx (length x)] [ly (length y)])
-            (do ([x (if (fx> lx ly) (list-tail x (fx- lx ly)) x) (cdr x)]
-                 [y (if (fx> ly lx) (list-tail y (fx- ly lx)) y) (cdr y)])
-                ((eq? x y) x)))))
+      (define (drop x n)
+        (if (fx= n 0) x (drop (winder-outer x) (fx- n 1))))
+      (define (common-tail x y)
+        (let ([dx (winders-depth x)] [dy (winders-depth y)])
+          (let loop ([x (if (fx> dx dy) (drop x (fx- dx dy)) x)]
+                     [y (if (fx> dy dx) (drop y (fx- dy dx)) y)])
+            (if (eq? x y)
+                x
+                (loop (winder-outer x) (winder-outer y))))))
       (let ([tail (common-tail old new)])
-        (let f ((old old))
+        (let f ([old old])
           (unless (eq? old tail)
-            (let ([w (car old)] [old (cdr old)])
-              (if (critical-winder? w)
-                  (begin
-                    (disable-interrupts)
-                    ($current-winders (cons disable/enable old))
-                    ($current-attachments (winder-attachments w))
-                    ((winder-out w))
-                    ($current-winders old)
-                    (enable-interrupts))
-                  (begin
-                    ($current-winders old)
-                    ($current-attachments (winder-attachments w))
-                    ((winder-out w))))
-              (f old))))
+            (wind-out! old)
+            (f (winder-outer old))))
         (let f ([new new])
           (unless (eq? new tail)
-            (let ([w (car new)])
-              (f (cdr new))
-              (if (critical-winder? w)
-                  (begin
-                    (disable-interrupts)
-                    ($current-winders (cons disable/enable (cdr new)))
-                    ($current-attachments (winder-attachments w))
-                    ((winder-in w))
-                    ($current-winders new)
-                    (enable-interrupts))
-                  (begin
-                    ($current-attachments (winder-attachments w))
-                    ((winder-in w))
-                    ($current-winders new)))))))))
+            (f (winder-outer new))
+            (wind-in! new))))))
+
+  (set! $winder-outer (lambda (w) (winder-outer w)))
+  (set! $winder-depth (lambda (w) (winders-depth w)))
+  (set! $winders-critical (lambda (w) (winders-critical w)))
+  (set! $wind-out! (lambda (w) (wind-out! w)))
+  (set! $wind-in! (lambda (w) (wind-in! w)))
   )
 
 (set! continuation-marks?

@@ -112,11 +112,29 @@
   (a profile-counter? make-profile-counter profile-counter-count profile-counter-count-set!))
 
 
+;; The winders of a continuation are a chain of `winder` records linked
+;; through `outer`, innermost first, ending in '(). `depth` is the chain's
+;; length, so that `$do-wind` can find the common tail of two chains in time
+;; proportional to the winders that differ. `critical` is the innermost
+;; critical winder further out in the chain, or '(), so that the critical
+;; winders of a chain can be found without visiting the others. A
+;; `pseudo-winder` disables interrupts while a critical winder's `in` or
+;; `out` thunk runs, so that an escape from the thunk re-enables them.
 (define-record-type winder
+  (fields (immutable outer) (immutable depth) (immutable critical))
+  (nongenerative #{winder qnbz1n5f3x1ldovscan3nu-3}))
+
+(define-record-type thunk-winder
+  (parent winder)
   (fields (immutable in) (immutable out) (immutable attachments))
-  (nongenerative #{winder qnbz1n5f3x1ldovscan3nu-0}))
+  (nongenerative #{thunk-winder qnbz1n5f3x1ldovscan3nu-4}))
 
 (define-record-type critical-winder
+  (parent thunk-winder)
+  (sealed #t)
+  (nongenerative #{critical-winder qnbz1n5f3x1ldovscan3nu-5}))
+
+(define-record-type pseudo-winder
   (parent winder)
   (sealed #t)
-  (nongenerative #{critical-winder qnbz1n5f3x1ldovscan3nu-2}))
+  (nongenerative #{pseudo-winder qnbz1n5f3x1ldovscan3nu-6}))

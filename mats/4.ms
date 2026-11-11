@@ -3041,6 +3041,94 @@
      "EIEIO")
  )
 
+;; the winder chain as seen by a runtime layer that runs winders itself
+(mat winder-chain
+  (equal?
+    (let ([base (#%$winder-depth (#%$current-winders))]
+          [c0 (#%$winders-critical (#%$current-winders))])
+      (dynamic-wind
+        void
+        (lambda ()
+          (let ([w1 (#%$current-winders)])
+            (dynamic-wind
+              #t
+              void
+              (lambda ()
+                (let ([w2 (#%$current-winders)])
+                  (dynamic-wind
+                    void
+                    (lambda ()
+                      (let ([w3 (#%$current-winders)])
+                        (list (- (#%$winder-depth w1) base)
+                              (- (#%$winder-depth w2) base)
+                              (eq? (#%$winder-outer w2) w1)
+                              ; the innermost critical winder of each chain
+                              (eq? (#%$winders-critical w1) c0)
+                              (eq? (#%$winders-critical w2) w2)
+                              (eq? (#%$winders-critical w3) w2)
+                              ; and the next one out
+                              (eq? (#%$winders-critical (#%$winder-outer w2)) c0))))
+                    void)))
+              void)))
+        void))
+    '(1 2 #t #t #t #t #t))
+  (equal?
+    (let ([w0 (#%$current-winders)])
+      (list
+        (dynamic-wind void (lambda () (eq? (#%$winder-outer (#%$current-winders)) w0)) void)
+        (eq? (#%$current-winders) w0)))
+    '(#t #t))
+  ; leave and re-enter a winder by hand
+  (equal?
+    (let ([trace '()])
+      (dynamic-wind
+        (lambda () (set! trace (cons 'in trace)))
+        (lambda ()
+          (let ([w (#%$current-winders)])
+            (#%$wind-out! w)
+            (let ([out? (eq? (#%$current-winders) (#%$winder-outer w))])
+              (#%$wind-in! w)
+              (list out? (eq? (#%$current-winders) w) (reverse trace)))))
+        (lambda () (set! trace (cons 'out trace)))))
+    '(#t #t (in out in)))
+  ; a `parameterize` is a critical winder that swaps the parameter's value
+  (equal?
+    (let ([p (make-parameter 0)])
+      (parameterize ([p 1])
+        (let ([w (#%$current-winders)])
+          (#%$wind-out! w)
+          (let ([outside (p)])
+            (#%$wind-in! w)
+            (list (eq? (#%$winders-critical w) w) outside (p) (eq? (#%$current-winders) w))))))
+    '(#t 0 1 #t))
+  ; winding by hand leaves interrupts as they were
+  (equal?
+    (let ([p (make-parameter 0)])
+      (parameterize ([p 1])
+        (let ([w (#%$current-winders)])
+          (#%$wind-out! w)
+          (#%$wind-in! w)
+          (let ([n (disable-interrupts)])
+            (enable-interrupts)
+            n))))
+    1)
+  ; a continuation jump still winds, and only across the winders that differ
+  (equal?
+    (let ([trace '()] [k #f] [n 0])
+      (dynamic-wind
+        (lambda () (set! trace (cons 'in1 trace)))
+        (lambda ()
+          (dynamic-wind
+            (lambda () (set! trace (cons 'in2 trace)))
+            (lambda () (call/cc (lambda (c) (set! k c))))
+            (lambda () (set! trace (cons 'out2 trace))))
+          (set! n (+ n 1))
+          (when (< n 3) (k #f)))
+        (lambda () (set! trace (cons 'out1 trace))))
+      (reverse trace))
+    '(in1 in2 out2 in2 out2 in2 out2 out1))
+)
+
 (mat call/1cc
    (call/1cc procedure?)
    (equal? (call/cc (lambda (x) (+ 3 (x "hi")))) "hi")
